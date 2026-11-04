@@ -1,4 +1,5 @@
 import { replyToBotChannel } from "#src/bots/channelReply.js";
+import { extractLocalFileAttachments, stripAssistantDirectives } from "#src/bots/assistantDirectives.js";
 import {
   BotAdminRequiredError,
   BotReplyError,
@@ -2954,7 +2955,7 @@ export function createBotsService(
           botId: bot.id,
           provider: bot.provider,
           providerUserId: chatId,
-          text: result.text,
+          text: stripAssistantDirectives(result.text),
           deliveryId: result.id,
           replyToMessageId: result.replyToMessageId,
           mentionedUserIds: result.mentionedUserIds,
@@ -2975,6 +2976,19 @@ export function createBotsService(
     message: BotOutboundMessage,
     authorize?: () => Promise<boolean>,
   ): Promise<void> {
+    // Bot channels have no Gen UI renderer: strip host-rendered assistant
+    // directives (::visualize / ::code-comment) before delivery, otherwise
+    // end users receive raw directive markup as chat text.
+    const sanitizedText = stripAssistantDirectives(message.text);
+    if (sanitizedText !== message.text) message = { ...message, text: sanitizedText };
+    // Telegram renders photos natively: attach local files the assistant
+    // referenced by absolute path and drop the path tokens from the caption.
+    if (bot.provider === "telegram") {
+      const extracted = extractLocalFileAttachments(message.text);
+      if (extracted.attachments.length > 0) {
+        message = { ...message, text: extracted.text, attachments: extracted.attachments };
+      }
+    }
     const conversationThreadId =
       message.conversationThreadId !== undefined
         ? (message.conversationThreadId ?? undefined)

@@ -623,6 +623,22 @@ export interface BotOutboundMessage {
   groupTaskId?: string;
   /** 可信任务事件中的输入命令，用于将投递状态定位到对应回复。 */
   groupSourceCommandId?: string;
+  /**
+   * 出站媒体：bridge 所在主机上已存在的本地文件引用。支持的 provider
+   * （当前为 Telegram sendPhoto/sendDocument）在发送文本前先上传这些文件；
+   * 其他 provider 忽略该字段。仅由服务端根据可信校验填充。
+   */
+  attachments?: BotOutboundAttachment[];
+}
+
+export type BotOutboundAttachmentKind = "file" | "image";
+
+export interface BotOutboundAttachment {
+  kind: BotOutboundAttachmentKind;
+  /** 绝对路径；provider 发送时按只读方式读取。 */
+  localPath: string;
+  /** 上传显示名；缺省时使用文件名。 */
+  name?: string;
 }
 
 export interface BotTaskSummary {

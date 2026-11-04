@@ -1,8 +1,11 @@
 /* eslint-disable max-lines -- Telegram provider 集中处理 Bot API 文本、按钮、媒体解析和附件下载。 */
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import type {
   BotInboundAttachment,
   BotConfig,
   BotInboundMessage,
+  BotOutboundAttachment,
   BotOutboundMessage,
   SelectionPrompt,
 } from "@zcode/shared";
@@ -79,6 +82,55 @@ function splitTelegramText(text: string): string[] {
 function truncateCallbackToast(text: string): string {
   const normalized = text.trim().replace(/\s+/gu, " ");
   return normalized.length > 180 ? `${normalized.slice(0, 177)}...` : normalized;
+}
+
+const TELEGRAM_UPLOAD_TIMEOUT_MS = 120_000;
+const TELEGRAM_MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+const TELEGRAM_MAX_DOCUMENT_BYTES = 50 * 1024 * 1024;
+
+interface TelegramSendResponse {
+  ok?: boolean;
+  description?: string;
+  error_code?: number;
+  parameters?: { retry_after?: number };
+}
+
+async function sendTelegramAttachment(
+  token: string,
+  chatId: string,
+  attachment: BotOutboundAttachment,
+): Promise<void> {
+  const data = await readFile(attachment.localPath);
+  const name = attachment.name?.trim() || basename(attachment.localPath);
+  // Oversized "images" degrade to documents instead of failing outright;
+  // Telegram only accepts photos up to 10 MB through sendPhoto.
+  const usePhoto = attachment.kind === "image" && data.length <= TELEGRAM_MAX_PHOTO_BYTES;
+  if (data.length > TELEGRAM_MAX_DOCUMENT_BYTES) {
+    throw Object.assign(
+      new Error(`Telegram upload rejected: ${name} exceeds the Bot API size limit`),
+      { deliveryRejected: true },
+    );
+  }
+  const method = usePhoto ? "sendPhoto" : "sendDocument";
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  form.append(usePhoto ? "photo" : "document", new Blob([data]), name);
+  const response = await fetchBotProviderJson<TelegramSendResponse>(
+    `https://api.telegram.org/bot${token}/${method}`,
+    { method: "POST", body: form },
+    TELEGRAM_UPLOAD_TIMEOUT_MS,
+  );
+  if (!response.ok || response.payload?.ok !== true) {
+    throw Object.assign(
+      new Error(
+        `Telegram ${method} failed (${response.payload?.error_code ?? response.status}): ${response.payload?.description ?? "unknown delivery result"}`,
+      ),
+      {
+        deliveryRejected: response.payload?.ok === false,
+        retryAfter: response.payload?.parameters?.retry_after,
+      },
+    );
+  }
 }
 
 function readTelegramPrivateMessage(
@@ -401,6 +453,14 @@ export function createTelegramBotProvider(deps: TelegramProviderDeps): BotProvid
       if (!token?.trim()) throw new Error("Telegram bot token is missing");
       const selection = message.selection;
       const replyMarkup = selection ? buildSelectionReplyMarkup(selection) : undefined;
+      // Media goes out before the caption text so photos read as an album
+      // followed by its explanation. A failed upload throws and marks the
+      // whole delivery retryable, same contract as text sends.
+      if (message.attachments && message.attachments.length > 0) {
+        for (const attachment of message.attachments) {
+          await sendTelegramAttachment(token, message.providerUserId, attachment);
+        }
+      }
       const chunks = splitTelegramText(message.text);
       for (const [index, text] of chunks.entries()) {
         // Bugfix: 长 Plan 会被拆成多条消息，审批提示位于最后一条。

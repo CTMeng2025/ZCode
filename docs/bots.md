@@ -209,6 +209,12 @@ Attachment handling follows the ZCode prompt capability model:
 - A message can include up to 4 attachments, with a 5MB limit per attachment.
 - If the user sends attachments without text, the bot uses the default prompt: `请查看附件并根据内容协助我。`
 
+### Outbound formatting and media
+
+Assistant replies can carry host-rendered inline directives (`::visualize{...}`, `::code-comment{...}`). Bot channels have no Gen UI renderer, so the service strips this grammar from every outbound text before it reaches a provider (`services/src/bots/assistantDirectives.ts`), including group task deliveries; directive syntax inside Markdown code ranges stays literal.
+
+Providers may additionally upload native media for attachments the assistant referenced by absolute path in its reply. Telegram implements this via `BotOutboundMessage.attachments` with `sendPhoto` (images ≤ 10 MB, oversized images degrade to `sendDocument`) and `sendDocument`; the referenced path tokens are removed from the caption. Other providers ignore the field.
+
 ## Providers
 
 Bot user-facing text follows the current app locale from settings. Service-layer replies are formatted through the shared bot message catalog before they reach providers. Provider adapters must not introduce new hard-coded user-facing labels when rendering native UI such as buttons, card placeholders, Card JSON 2.0 status text, or text-only selection hints; those labels must either be preformatted by the service or receive the outbound message locale. Feishu / Lark Card JSON 2.0 replies therefore carry the locale alongside the outbound message or streaming-card state so provider-owned controls, AskUserQuestion forms, and streaming status lines stay in the same language as the rest of the bot reply. Protocol command names such as `/status`, `/workspace`, callback payloads, and provider API error diagnostics remain stable English identifiers.
